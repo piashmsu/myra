@@ -1,0 +1,17 @@
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/ai/GeminiLiveClient.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/SecuritySettingsActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/ui/settings/SettingsActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/PatternSetupActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/service/CallMonitorService.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/service/PowerButtonReceiver.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/automation/CallAutomation.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/PatternManager.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/SecurityManager.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/ui/main/UiComponents.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/ui/main/OrbAnimationView.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/BiometricManager.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/AppLockActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/ui/main/CallAssistantActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/ui/main/MainActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/AppSelectionActivity.kt
+/storage/emulated/0/AndroidIDEProjects/MYRA/app/src/main/java/com/myra/assistant/security/PatternLockView.kt
