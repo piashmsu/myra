@@ -75,27 +75,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var totalTimeouts = 0
     private var watchdogRunnable: Runnable? = null
 
-    private val callReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                CallMonitorService.ACTION_CALL_ACTIVE -> {
-                    isCallActive = true
-                    transitionToState(ConversationState.IDLE)
-                    cancelPendingRestart(); stopRecognizer(); liveAudioManager.stop()
-                    updateStatus("On call... 📞")
-                }
-                CallMonitorService.ACTION_CALL_ENDED -> {
-                    isCallActive = false
-                    mainHandler.postDelayed({
-                        if (isLiveConnected) {
-                            transitionToState(ConversationState.LISTENING)
-                            updateStatus("MYRA Ready ❤️"); triggerListenCycle()
-                        }
-                    }, 3000)
-                }
-            }
-        }
-    }
+    // Deduplication: track last transcript and timestamp
+    private var lastTranscript = ""
+    private var lastTranscriptTime = 0L
 
     companion object {
         const val PERMISSIONS_REQUEST = 100
@@ -109,6 +91,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val STATE_TIMEOUT_MS = 15000L
         private const val COMMAND_EXECUTION_DELAY_MS = 4000L
         private const val ECHO_SIMILARITY_THRESHOLD = 0.7
+        private const val DUPLICATE_WINDOW_MS = 2000L
+
+        // Wake words that should NOT be sent to Gemini
+        private val WAKE_WORDS = setOf(
+            "hello", "হেলো", "hey myra", "myra", "hi", "sun rahi ho",
+            "sun", "sun raha", "sun rahi", "hey", "hii"
+        )
 
         private val COMMAND_PREFIXES = listOf(
             "OPEN_APP", "YOUTUBE_PLAY", "SPOTIFY_PLAY", "WHATSAPP_MSG",
@@ -122,6 +111,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             "intended recipient", "more specific contact", "misspelling of a contact",
             "informal way to describe", "chain of thought"
         )
+    }
+
+    private val callReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                CallMonitorService.ACTION_CALL_ACTIVE -> {
+                    isCallActive = true
+                    transitionToState(ConversationState.IDLE)
+                    cancelPendingRestart(); stopRecognizer(); if (::liveAudioManager.isInitialized) liveAudioManager.stop()
+                    updateStatus("On call... 📞")
+                }
+                CallMonitorService.ACTION_CALL_ENDED -> {
+                    isCallActive = false
+                    mainHandler.postDelayed({
+                        if (isLiveConnected) {
+                            transitionToState(ConversationState.LISTENING)
+                            updateStatus("MYRA Ready ❤️"); triggerListenCycle()
+                        }
+                    }, 3000)
+                }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -155,6 +166,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         else registerReceiver(callReceiver, filter)
 
         liveAudioManager = LiveAudioManager(this)
+        // When audio queue drains, mark speaking as false
+        liveAudioManager.onQueueDrained = {
+            runOnUiThread {
+                isSpeakingOrPlaying = false
+                Log.d(TAG, "MYRA_TURN_COMPLETE: Audio drained, resuming listen")
+                if (currentState != ConversationState.IDLE && !isCallActive) {
+                    transitionToState(ConversationState.LISTENING)
+                    triggerListenCycle()
+                }
+            }
+        }
         setupGeminiLive()
 
         val speakText = intent.getStringExtra("SPEAK_TEXT")
@@ -202,8 +224,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun speakDirectly(text: String) {
         stopRecognizer(); isSpeakingOrPlaying = true
-        // ✅ Status updates from automation should use TTS directly, NOT Gemini Brain
-        // This prevents double-speaking and AI loops
         val p = Bundle(); p.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "STATUS")
         tts?.speak(text, TextToSpeech.QUEUE_ADD, p, "STATUS")
         mainHandler.postDelayed({ isSpeakingOrPlaying = false }, (text.length * 100L).coerceIn(1000L, 5000L))
@@ -223,7 +243,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
             mainHandler.postDelayed(stateTimeoutRunnable!!, STATE_TIMEOUT_MS)
         }
-        // Extra safety: watchdog to recover from PROCESSING if stuck
+        // Watchdog for PROCESSING stuck
         if (newState == ConversationState.PROCESSING) {
             watchdogRunnable = Runnable {
                 Log.w(TAG, "WATCHDOG: stuck in PROCESSING, forcing recovery")
@@ -236,8 +256,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         when (newState) {
             ConversationState.IDLE       -> { micButton.setImageResource(R.drawable.ic_mic_off); orbView.setPulsating(false); orbView.setSpeaking(false); orbView.setThinking(false) }
             ConversationState.LISTENING  -> { micButton.setImageResource(R.drawable.ic_mic_on);  orbView.setPulsating(true);  orbView.setSpeaking(false); orbView.setThinking(false); updateStatus("Listening... 👂") }
-            ConversationState.PROCESSING -> { micButton.setImageResource(R.drawable.ic_mic_on);  orbView.setPulsating(false); orbView.setSpeaking(false); orbView.setThinking(true);  updateStatus("Executing... ⚡") }
-            ConversationState.SPEAKING   -> { micButton.setImageResource(R.drawable.ic_mic_on);  orbView.setPulsating(false); orbView.setSpeaking(true);  orbView.setThinking(false); updateStatus("Speaking... 💬") }
+            ConversationState.PROCESSING -> { micButton.setImageResource(R.drawable.ic_mic_on);  orbView.setPulsating(false); orbView.setSpeaking(false); orbView.setThinking(true);  updateStatus("Processing...") }
+            ConversationState.SPEAKING   -> { micButton.setImageResource(R.drawable.ic_mic_on);  orbView.setPulsating(false); orbView.setSpeaking(true);  orbView.setThinking(false); updateStatus("Bol rahi hoon...") }
             ConversationState.WAITING    -> { micButton.setImageResource(R.drawable.ic_mic_on);  orbView.setPulsating(false); orbView.setSpeaking(false); orbView.setThinking(true);  updateStatus("Thinking... 🤔") }
             ConversationState.ERROR      -> { micButton.setImageResource(R.drawable.ic_mic_off); orbView.setPulsating(false); updateStatus("Error! Tap mic") }
         }
@@ -253,7 +273,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun attachRecognitionListener() {
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) { isRecognizerListening = true; runOnUiThread { waveformView.startAnimation(); updateStatus("Listening... 👂") } }
-            override fun onBeginningOfSpeech() = runOnUiThread { updateStatus("Hearing you... 🎙️") }
+            override fun onBeginningOfSpeech() = runOnUiThread { updateStatus("Sun rahi hoon... 🎤") }
             override fun onResults(results: Bundle?) {
                 isRecognizerListening = false
                 totalTimeouts = 0
@@ -270,6 +290,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     scheduleRestart(800)
                     return
                 }
+                // Deduplication check
+                val now = System.currentTimeMillis()
+                if (text == lastTranscript && (now - lastTranscriptTime) < DUPLICATE_WINDOW_MS) {
+                    Log.d(TAG, "Duplicate transcript ignored within ${now - lastTranscriptTime}ms")
+                    scheduleRestart(800)
+                    return
+                }
+                lastTranscript = text
+                lastTranscriptTime = now
+
                 addUserMessage(com.myra.assistant.utils.HindiTransliterator.transliterate(text))
                 transitionToState(ConversationState.PROCESSING)
                 processUserInput(text)
@@ -284,7 +314,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 Log.d(TAG, "Speech error: $errorCode, state=$currentState, timeouts=$totalTimeouts")
 
                 if (currentState == ConversationState.SPEAKING || isSpeakingOrPlaying) {
-                    Log.d(TAG, "Ignoring error during speaking")
+                    Log.d(TAG, "MYRA_MIC_SUPPRESSED_WHILE_SPEAKING: Ignoring error during speaking")
                     return
                 }
                 if (currentState == ConversationState.PROCESSING || isCommandExecuting) {
@@ -296,7 +326,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
                         totalTimeouts++
                         Log.d(TAG, "Timeout #$totalTimeouts")
-                        // Recreate recognizer after 3 consecutive timeouts to clear bad state
                         if (totalTimeouts >= 3) {
                             totalTimeouts = 0
                             Log.d(TAG, "Recreating recognizer after timeouts")
@@ -354,9 +383,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun triggerListenCycle() {
         if (currentState == ConversationState.IDLE || isCallActive) return
         if (isCommandExecuting) { scheduleRestart(COMMAND_EXECUTION_DELAY_MS); return }
-        if (isSpeakingOrPlaying || currentState == ConversationState.SPEAKING) { scheduleRestart(2000); return }
+        if (isSpeakingOrPlaying || currentState == ConversationState.SPEAKING) {
+            Log.d(TAG, "MYRA_MIC_SUPPRESSED_WHILE_SPEAKING: Delaying restart")
+            scheduleRestart(2000)
+            return
+        }
         if (currentState == ConversationState.PROCESSING || currentState == ConversationState.WAITING) { scheduleRestart(3000); return }
         if (isRecognizerListening) return
+        // Don't listen if audio engine is still speaking
+        if (::liveAudioManager.isInitialized && liveAudioManager.isSpeaking) {
+            Log.d(TAG, "MYRA_MIC_SUPPRESSED_WHILE_SPEAKING: audioEngine.isSpeaking=true")
+            scheduleRestart(1000)
+            return
+        }
         startRecognizer()
     }
 
@@ -383,7 +422,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
                 putExtra("android.speech.extra.DICTATION_MODE", true)
-                // Longer timeout so user has time to speak
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
@@ -417,7 +455,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun activateMic() {
-        if (currentState == ConversationState.IDLE) { transitionToState(ConversationState.LISTENING); updateStatus("MYRA Ready ❤️"); triggerListenCycle() }
+        if (currentState == ConversationState.IDLE) { transitionToState(ConversationState.LISTENING); updateStatus("Bolun, ami shunchi..."); triggerListenCycle() }
     }
 
     private fun deactivateMic() {
@@ -426,8 +464,38 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (::liveAudioManager.isInitialized) {
             try { liveAudioManager.stop() } catch (_: Exception) {}
         }
-        updateStatus("Tap mic to start 🎙️")
+        updateStatus("Tap mic to start 🎤")
         micButton.setImageResource(R.drawable.ic_mic_off)
+    }
+
+    // ===== WAKE WORD & COMMAND PROCESSING =====
+
+    private fun isWakeWordOnly(text: String): Boolean {
+        val lower = text.lowercase().trim()
+        // Exact match with wake word
+        if (WAKE_WORDS.contains(lower)) {
+            Log.d(TAG, "MYRA_WAKE_WORD_IGNORED: exact wake word match: '$lower'")
+            return true
+        }
+        // Check if text is just a wake word with minimal content
+        val words = lower.split(" ").filter { it.isNotBlank() }
+        if (words.size == 1 && WAKE_WORDS.contains(words[0])) {
+            Log.d(TAG, "MYRA_WAKE_WORD_IGNORED: single word wake: '${words[0]}'")
+            return true
+        }
+        return false
+    }
+
+    private fun stripWakeWord(text: String): String {
+        val lower = text.lowercase().trim()
+        for (wake in WAKE_WORDS) {
+            if (lower.startsWith(wake)) {
+                val after = text.substring(wake.length).trim()
+                Log.d(TAG, "Stripped wake word '$wake', remaining: '$after'")
+                return after
+            }
+        }
+        return text
     }
 
     private fun setupGeminiLive() {
@@ -440,21 +508,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         liveClient = GeminiLiveClient(apiKey, buildSystemPrompt(personality, userName),
             object : GeminiLiveClient.LiveListener {
                 override fun onAudioReceived(data: ByteArray) {
-                    runOnUiThread { stopRecognizer(); isSpeakingOrPlaying = true; transitionToState(ConversationState.SPEAKING); MyraOverlayService.updateState(this@MainActivity, speaking = true) }
+                    runOnUiThread {
+                        stopRecognizer()
+                        isSpeakingOrPlaying = true
+                        transitionToState(ConversationState.SPEAKING)
+                        MyraOverlayService.updateState(this@MainActivity, speaking = true)
+                    }
                     liveAudioManager.playChunk(data)
                 }
 
                 override fun onTextReceived(text: String) {
                     runOnUiThread {
                         val trimmed = text.trim()
-
-                        // Step 1: Discard internal AI thinking completely
                         if (isInternalMessage(trimmed)) {
                             Log.d(TAG, "Discarded internal msg: ${trimmed.take(50)}")
                             return@runOnUiThread
                         }
-
-                        // Step 2: If it's a command — execute it, don't display it
                         val cmd = extractCommand(trimmed)
                         if (cmd != null) {
                             Log.d(TAG, "Executing Gemini cmd: $cmd")
@@ -468,8 +537,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             }, COMMAND_EXECUTION_DELAY_MS)
                             return@runOnUiThread
                         }
-
-                        // Step 3: Normal spoken response — show + set for echo detection
                         lastBotResponse = trimmed.lowercase()
                         addBotMessage(trimmed)
                         if (trimmed.uppercase().run { contains("SLEEP MODE") || contains("SO JAO") }) deactivateMic()
@@ -483,7 +550,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 override fun onTurnComplete() {
                     runOnUiThread {
-                        isSpeakingOrPlaying = false; transitionToState(ConversationState.LISTENING)
+                        isSpeakingOrPlaying = false
+                        transitionToState(ConversationState.LISTENING)
                         MyraOverlayService.updateState(this@MainActivity, speaking = false)
                         if (currentState != ConversationState.IDLE && !isCallActive) mainHandler.postDelayed({ triggerListenCycle() }, 2000)
                     }
@@ -497,9 +565,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         liveClient.start()
     }
 
-    private fun processUserInput(text: String) {
-        Log.d(TAG, "Voice: '$text'")
+    private fun processUserInput(rawText: String) {
+        Log.d(TAG, "MYRA_INPUT_TRANSCRIPT: '$rawText'")
+        val text = rawText.trim()
         val lower = text.lowercase().trim()
+
+        // 1. Stop/sleep commands
         if (lower in listOf("stop", "exit", "sleep", "ruko", "band karo", "so jao", "bye myra", "goodbye")) {
             deactivateMic()
             val msg = "Theek hai, so rahi hoon."
@@ -507,10 +578,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        if (viewModel.isDirectCommand(text)) {
-            Log.d(TAG, "Direct command path")
-            isCommandExecuting = true; transitionToState(ConversationState.PROCESSING); stopRecognizer()
-            lifecycleScope.launch { viewModel.processCommand(text) }
+        // 2. Wake word only? Just activate and listen
+        if (isWakeWordOnly(text)) {
+            Log.d(TAG, "MYRA_WAKE_WORD_IGNORED: Wake word only, staying in LISTENING")
+            transitionToState(ConversationState.LISTENING)
+            updateStatus("Bolun, ami shunchi...")
+            triggerListenCycle()
+            return
+        }
+
+        // 3. Strip wake word if present
+        val query = stripWakeWord(text)
+        if (query.isBlank()) {
+            Log.d(TAG, "MYRA_WAKE_WORD_IGNORED: Empty after stripping wake word")
+            transitionToState(ConversationState.LISTENING)
+            triggerListenCycle()
+            return
+        }
+
+        // 4. Check for direct command first
+        if (viewModel.isDirectCommand(query)) {
+            Log.d(TAG, "Direct command path: $query")
+            isCommandExecuting = true
+            transitionToState(ConversationState.PROCESSING)
+            stopRecognizer()
+            lifecycleScope.launch { viewModel.processCommand(query) }
             mainHandler.postDelayed({
                 isCommandExecuting = false
                 if (currentState != ConversationState.IDLE && !isCallActive) { transitionToState(ConversationState.LISTENING); triggerListenCycle() }
@@ -518,13 +610,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        // 5. Send to Gemini (Live mode) or fallback
         if (isLiveConnected) {
             val ctx = getScreenContext()
-            liveClient.sendTextMessage(if (ctx.isNotEmpty()) "[Screen: $ctx] User: $text" else text)
+            liveClient.sendTextMessage(if (ctx.isNotEmpty()) "[Screen: $ctx] User: $query" else query)
             transitionToState(ConversationState.WAITING)
         } else {
             isCommandExecuting = true
-            lifecycleScope.launch { viewModel.processCommand(text) }
+            lifecycleScope.launch { viewModel.processCommand(query) }
             mainHandler.postDelayed({
                 isCommandExecuting = false
                 if (currentState != ConversationState.IDLE && !isCallActive && !isSpeakingOrPlaying) {
@@ -621,7 +714,7 @@ After command, add ONE short Hinglish line:
         settingsBtn = findViewById(R.id.settingsBtn); waveformView = findViewById(R.id.waveformView)
         chatAdapter = ChatAdapter()
         chatRecycler.apply { adapter = chatAdapter; layoutManager = LinearLayoutManager(this@MainActivity).apply { stackFromEnd = true } }
-        micButton.setImageResource(R.drawable.ic_mic_off); updateStatus("Tap mic to start 🎙️")
+        micButton.setImageResource(R.drawable.ic_mic_off); updateStatus("Tap mic to start 🎤")
         micButton.setOnClickListener { if (currentState == ConversationState.IDLE) activateMic() else deactivateMic() }
         settingsBtn.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
     }
@@ -651,7 +744,6 @@ After command, add ONE short Hinglish line:
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, gr: IntArray) {
         super.onRequestPermissionsResult(rc, p, gr)
         if (rc == PERMISSIONS_REQUEST) {
-            // Only start services if RECORD_AUDIO is granted (critical for voice)
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 startSystemServices()
             } else {
@@ -664,7 +756,6 @@ After command, add ONE short Hinglish line:
     }
 
     private fun startSystemServices() {
-        // Only start foreground services if we have the required permissions
         val hasRecordAudio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val hasPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
 

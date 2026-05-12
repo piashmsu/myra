@@ -17,13 +17,20 @@ class GeminiLiveClient(
     private var isSetupComplete = false
     private var webSocket: WebSocket? = null
 
+    // Buffers for deduplication
+    private val inputBuffer = StringBuilder()
+    private val outputBuffer = StringBuilder()
+    private var lastInputText = ""
+    private var lastOutputText = ""
+    private var inputProcessed = false
+    private var outputProcessed = false
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .connectTimeout(20, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS) // Connection ko zinda rakhne ke liye
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
-    // Aapka original model name
     private val URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=$apiKey"
 
     interface LiveListener {
@@ -36,6 +43,7 @@ class GeminiLiveClient(
 
     fun start() {
         isSetupComplete = false
+        clearBuffers()
         val request = Request.Builder()
             .url(URL)
             .addHeader("Origin", "https://generativelanguage.googleapis.com")
@@ -43,18 +51,15 @@ class GeminiLiveClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "Connected ✅")
+                Log.d(TAG, "Connected")
                 sendSetup()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                // Saara data JSON mein aata hai, use handle karein
                 handleResponse(text)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                // Gemini Live API hamesha JSON Text bhejta hai.
-                // Binary frame ki handle karne ki zaroorat nahi hai, par safety ke liye:
                 try {
                     handleResponse(bytes.utf8())
                 } catch (e: Exception) {
@@ -94,15 +99,30 @@ class GeminiLiveClient(
                 })
             }
             webSocket?.send(setupJson.toString())
-            Log.d(TAG, "Setup Sent ✅")
+            Log.d(TAG, "Setup Sent")
         } catch (e: Exception) {
             Log.e(TAG, "Setup Error: ${e.message}")
         }
     }
 
     fun sendTextMessage(text: String) {
-        if (!isSetupComplete) return
+        if (!isSetupComplete) {
+            Log.w(TAG, "MYRA_MIC_SUPPRESSED_WHILE_SPEAKING: Setup not complete, dropping: $text")
+            return
+        }
         try {
+            // Do NOT send MYRA's own output back as input
+            if (text == lastOutputText || text.contains(lastOutputText)) {
+                Log.w(TAG, "MYRA_MIC_SUPPRESSED_WHILE_SPEAKING: Ignoring MYRA's own output: $text")
+                return
+            }
+            // Buffer input for deduplication
+            inputBuffer.append(text).append(" ")
+            lastInputText = text
+            inputProcessed = false
+
+            Log.d(TAG, "MYRA_INPUT_TRANSCRIPT: $text")
+
             val msg = JSONObject().apply {
                 put("clientContent", JSONObject().apply {
                     put("turns", JSONArray().put(JSONObject().apply {
@@ -124,37 +144,40 @@ class GeminiLiveClient(
         try {
             val json = JSONObject(jsonString)
 
-            // Setup confirm karne ka sahi tarika
             if (json.has("setupComplete")) {
                 isSetupComplete = true
-                Log.d(TAG, "GEMINI READY ✅")
+                Log.d(TAG, "GEMINI READY")
                 callback.onConnected()
                 return
             }
 
             val serverContent = json.optJSONObject("serverContent") ?: return
 
-            // AI Response handle karein
             val modelTurn = serverContent.optJSONObject("modelTurn")
             if (modelTurn != null) {
                 val parts = modelTurn.optJSONArray("parts") ?: return
                 for (i in 0 until parts.length()) {
                     val part = parts.getJSONObject(i)
 
-                    // Audio Data (Awaaz)
                     if (part.has("inlineData")) {
                         val base64Data = part.getJSONObject("inlineData").getString("data")
                         callback.onAudioReceived(Base64.decode(base64Data, Base64.DEFAULT))
                     }
 
-                    // Text Data (Subtitles)
                     if (part.has("text")) {
-                        callback.onTextReceived(part.getString("text"))
+                        val text = part.getString("text")
+                        outputBuffer.append(text).append(" ")
+                        lastOutputText = text
+                        Log.d(TAG, "MYRA_OUTPUT_TRANSCRIPT: $text")
+                        callback.onTextReceived(text)
                     }
                 }
             }
 
             if (serverContent.optBoolean("turnComplete", false)) {
+                Log.d(TAG, "MYRA_TURN_COMPLETE")
+                // Flush buffers once
+                flushBuffersToChat()
                 callback.onTurnComplete()
             }
 
@@ -163,8 +186,30 @@ class GeminiLiveClient(
         }
     }
 
+    private fun flushBuffersToChat() {
+        if (!inputProcessed && inputBuffer.isNotBlank()) {
+            Log.d(TAG, "Flushing input buffer: ${inputBuffer.toString().trim()}")
+            inputProcessed = true
+        }
+        if (!outputProcessed && outputBuffer.isNotBlank()) {
+            Log.d(TAG, "Flushing output buffer: ${outputBuffer.toString().trim()}")
+            outputProcessed = true
+        }
+        // Clear buffers immediately after flush
+        clearBuffers()
+    }
+
+    private fun clearBuffers() {
+        inputBuffer.clear()
+        outputBuffer.clear()
+        inputProcessed = false
+        outputProcessed = false
+        Log.d(TAG, "Buffers cleared")
+    }
+
     fun disconnect() {
         webSocket?.close(1000, "Bye")
         isSetupComplete = false
+        clearBuffers()
     }
 }

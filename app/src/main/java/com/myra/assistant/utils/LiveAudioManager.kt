@@ -19,6 +19,13 @@ class LiveAudioManager(context: Context) {
     private val channelConfig = AudioFormat.CHANNEL_OUT_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
 
+    // Track if audio is currently playing
+    var isSpeaking = false
+        private set
+
+    // Callback for when queue fully drains
+    var onQueueDrained: (() -> Unit)? = null
+
     init {
         createAudioTrack()
     }
@@ -55,6 +62,7 @@ class LiveAudioManager(context: Context) {
 
     fun playChunk(data: ByteArray) {
         if (data.isEmpty()) return
+        isSpeaking = true
         audioQueue.offer(data)
         if (!isPlaying) startPlaybackLoop()
     }
@@ -62,9 +70,11 @@ class LiveAudioManager(context: Context) {
     private fun startPlaybackLoop() {
         isPlaying = true
         playThread = Thread {
+            var emptyCount = 0
             while (isPlaying) {
                 val chunk = audioQueue.poll()
                 if (chunk != null) {
+                    emptyCount = 0
                     try {
                         audioTrack?.write(chunk, 0, chunk.size)
                     } catch (e: Exception) {
@@ -72,6 +82,15 @@ class LiveAudioManager(context: Context) {
                     }
                 } else {
                     Thread.sleep(10)
+                    emptyCount++
+                    // If queue has been empty for ~500ms (50 * 10ms), consider drained
+                    if (emptyCount > 50) {
+                        isSpeaking = false
+                        Log.d(TAG, "MYRA_TURN_COMPLETE: Audio queue drained, isSpeaking=false")
+                        onQueueDrained?.invoke()
+                        // Keep thread alive but mark not speaking
+                        emptyCount = 0
+                    }
                 }
             }
         }.apply {
@@ -82,6 +101,7 @@ class LiveAudioManager(context: Context) {
 
     fun stop() {
         isPlaying = false
+        isSpeaking = false
         audioQueue.clear()
         playThread?.join(500)
         playThread = null
@@ -90,6 +110,7 @@ class LiveAudioManager(context: Context) {
             audioTrack?.reloadStaticData()
             audioTrack?.play()
         } catch (_: Exception) {}
+        Log.d(TAG, "Audio stopped")
     }
 
     fun release() {
