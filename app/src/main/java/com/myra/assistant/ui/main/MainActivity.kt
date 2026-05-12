@@ -72,6 +72,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var liveClient: GeminiLiveClient
     private lateinit var liveAudioManager: LiveAudioManager
     private var consecutiveErrors = 0
+    private var totalTimeouts = 0
+    private var watchdogRunnable: Runnable? = null
 
     private val callReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -210,6 +212,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun transitionToState(newState: ConversationState) {
         Log.d(TAG, "State: $currentState -> $newState")
         stateTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        watchdogRunnable?.let { mainHandler.removeCallbacks(it) }
         currentState = newState
         if (newState in listOf(ConversationState.LISTENING, ConversationState.PROCESSING, ConversationState.WAITING)) {
             stateTimeoutRunnable = Runnable {
@@ -219,6 +222,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
             mainHandler.postDelayed(stateTimeoutRunnable!!, STATE_TIMEOUT_MS)
+        }
+        // Extra safety: watchdog to recover from PROCESSING if stuck
+        if (newState == ConversationState.PROCESSING) {
+            watchdogRunnable = Runnable {
+                Log.w(TAG, "WATCHDOG: stuck in PROCESSING, forcing recovery")
+                isCommandExecuting = false
+                transitionToState(ConversationState.LISTENING)
+                triggerListenCycle()
+            }
+            mainHandler.postDelayed(watchdogRunnable!!, 8000L)
         }
         when (newState) {
             ConversationState.IDLE       -> { micButton.setImageResource(R.drawable.ic_mic_off); orbView.setPulsating(false); orbView.setSpeaking(false); orbView.setThinking(false) }
@@ -243,31 +256,80 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             override fun onBeginningOfSpeech() = runOnUiThread { updateStatus("Hearing you... 🎙️") }
             override fun onResults(results: Bundle?) {
                 isRecognizerListening = false
-                runOnUiThread { waveformView.stopAnimation() }
+                totalTimeouts = 0
+                waveformView.stopAnimation()
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull { it.isNotBlank() } ?: ""
                 Log.d(TAG, "STT: '$text'")
-                if (text.isBlank()) { scheduleRestart(600); return }
-                if (isEcho(text)) { Log.d(TAG, "Echo skipped"); scheduleRestart(800); return }
-                runOnUiThread {
-                    addUserMessage(com.myra.assistant.utils.HindiTransliterator.transliterate(text))
-                    transitionToState(ConversationState.PROCESSING)
-                    processUserInput(text)
+                if (text.isBlank()) {
+                    Log.d(TAG, "Empty result, will restart")
+                    scheduleRestart(600)
+                    return
                 }
+                if (isEcho(text)) {
+                    Log.d(TAG, "Echo skipped")
+                    scheduleRestart(800)
+                    return
+                }
+                addUserMessage(com.myra.assistant.utils.HindiTransliterator.transliterate(text))
+                transitionToState(ConversationState.PROCESSING)
+                processUserInput(text)
             }
             override fun onPartialResults(partialResults: Bundle?) {
                 val p = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
                 if (p.isNotBlank()) runOnUiThread { updateStatus("$p...") }
             }
             override fun onError(errorCode: Int) {
-                isRecognizerListening = false; waveformView.stopAnimation()
-                if (currentState == ConversationState.SPEAKING || isSpeakingOrPlaying) return
-                if (currentState == ConversationState.PROCESSING || isCommandExecuting) return
+                isRecognizerListening = false
+                waveformView.stopAnimation()
+                Log.d(TAG, "Speech error: $errorCode, state=$currentState, timeouts=$totalTimeouts")
+
+                if (currentState == ConversationState.SPEAKING || isSpeakingOrPlaying) {
+                    Log.d(TAG, "Ignoring error during speaking")
+                    return
+                }
+                if (currentState == ConversationState.PROCESSING || isCommandExecuting) {
+                    Log.d(TAG, "Ignoring error during processing")
+                    return
+                }
+
                 when (errorCode) {
-                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> if (currentState != ConversationState.IDLE && !isCallActive) { transitionToState(ConversationState.LISTENING); scheduleRestart(400) }
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> mainHandler.postDelayed({ createSpeechRecognizer(); if (currentState != ConversationState.IDLE && !isCallActive) scheduleRestart(800) }, 500)
-                    SpeechRecognizer.ERROR_AUDIO, SpeechRecognizer.ERROR_CLIENT -> mainHandler.postDelayed({ createSpeechRecognizer(); if (currentState != ConversationState.IDLE && !isCallActive) scheduleRestart(1000) }, 500)
-                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_SERVER -> { runOnUiThread { updateStatus("Network issue...") }; scheduleRestart(3000) }
-                    else -> if (currentState != ConversationState.IDLE && !isCallActive) scheduleRestart(1000)
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        totalTimeouts++
+                        Log.d(TAG, "Timeout #$totalTimeouts")
+                        // Recreate recognizer after 3 consecutive timeouts to clear bad state
+                        if (totalTimeouts >= 3) {
+                            totalTimeouts = 0
+                            Log.d(TAG, "Recreating recognizer after timeouts")
+                            createSpeechRecognizer()
+                        }
+                        if (currentState != ConversationState.IDLE && !isCallActive) {
+                            transitionToState(ConversationState.LISTENING)
+                            scheduleRestart(600)
+                        }
+                    }
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
+                        totalTimeouts = 0
+                        mainHandler.postDelayed({
+                            createSpeechRecognizer()
+                            if (currentState != ConversationState.IDLE && !isCallActive) scheduleRestart(800)
+                        }, 500)
+                    }
+                    SpeechRecognizer.ERROR_AUDIO, SpeechRecognizer.ERROR_CLIENT -> {
+                        totalTimeouts = 0
+                        mainHandler.postDelayed({
+                            createSpeechRecognizer()
+                            if (currentState != ConversationState.IDLE && !isCallActive) scheduleRestart(1000)
+                        }, 500)
+                    }
+                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_SERVER -> {
+                        totalTimeouts = 0
+                        updateStatus("Network issue...")
+                        scheduleRestart(3000)
+                    }
+                    else -> {
+                        totalTimeouts = 0
+                        if (currentState != ConversationState.IDLE && !isCallActive) scheduleRestart(1000)
+                    }
                 }
             }
             override fun onEndOfSpeech() = runOnUiThread { waveformView.stopAnimation(); updateStatus("Processing...") }
@@ -300,7 +362,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun startRecognizer() {
         cancelPendingRestart()
-        if (speechRecognizer == null || consecutiveErrors > 3) { consecutiveErrors = 0; createSpeechRecognizer() }
+        if (speechRecognizer == null || consecutiveErrors > 3 || totalTimeouts >= 3) {
+            consecutiveErrors = 0
+            totalTimeouts = 0
+            Log.d(TAG, "Recreating recognizer before start")
+            createSpeechRecognizer()
+        }
+        if (speechRecognizer == null) {
+            Log.e(TAG, "Recognizer is null, cannot start")
+            scheduleRestart(2000)
+            return
+        }
         try {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -311,14 +383,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
                 putExtra("android.speech.extra.DICTATION_MODE", true)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+                // Longer timeout so user has time to speak
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             }
+            Log.d(TAG, "Starting speech recognition...")
             speechRecognizer?.startListening(intent)
             transitionToState(ConversationState.LISTENING)
-        } catch (e: Exception) { Log.e(TAG, "startListening: ${e.message}"); isRecognizerListening = false; consecutiveErrors++; scheduleRestart(1500) }
+        } catch (e: Exception) {
+            Log.e(TAG, "startListening failed: ${e.message}")
+            isRecognizerListening = false
+            consecutiveErrors++
+            scheduleRestart(2000)
+        }
     }
 
     private fun scheduleRestart(delayMs: Long) {
