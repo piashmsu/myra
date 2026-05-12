@@ -242,14 +242,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             override fun onReadyForSpeech(params: Bundle?) { isRecognizerListening = true; runOnUiThread { waveformView.startAnimation(); updateStatus("Listening... 👂") } }
             override fun onBeginningOfSpeech() = runOnUiThread { updateStatus("Hearing you... 🎙️") }
             override fun onResults(results: Bundle?) {
-                isRecognizerListening = false; waveformView.stopAnimation()
+                isRecognizerListening = false
+                runOnUiThread { waveformView.stopAnimation() }
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull { it.isNotBlank() } ?: ""
                 Log.d(TAG, "STT: '$text'")
                 if (text.isBlank()) { scheduleRestart(600); return }
                 if (isEcho(text)) { Log.d(TAG, "Echo skipped"); scheduleRestart(800); return }
-                runOnUiThread { addUserMessage(com.myra.assistant.utils.HindiTransliterator.transliterate(text)) }
-                transitionToState(ConversationState.PROCESSING)
-                processUserInput(text)
+                runOnUiThread {
+                    addUserMessage(com.myra.assistant.utils.HindiTransliterator.transliterate(text))
+                    transitionToState(ConversationState.PROCESSING)
+                    processUserInput(text)
+                }
             }
             override fun onPartialResults(partialResults: Bundle?) {
                 val p = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
@@ -340,7 +343,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun deactivateMic() {
         transitionToState(ConversationState.IDLE); isCommandExecuting = false; isSpeakingOrPlaying = false
-        stopRecognizer(); liveAudioManager.stop(); updateStatus("Tap mic to start 🎙️"); micButton.setImageResource(R.drawable.ic_mic_off)
+        stopRecognizer()
+        if (::liveAudioManager.isInitialized) {
+            try { liveAudioManager.stop() } catch (_: Exception) {}
+        }
+        updateStatus("Tap mic to start 🎙️")
+        micButton.setImageResource(R.drawable.ic_mic_off)
     }
 
     private fun setupGeminiLive() {
@@ -436,7 +444,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             liveClient.sendTextMessage(if (ctx.isNotEmpty()) "[Screen: $ctx] User: $text" else text)
             transitionToState(ConversationState.WAITING)
         } else {
+            isCommandExecuting = true
             lifecycleScope.launch { viewModel.processCommand(text) }
+            mainHandler.postDelayed({
+                isCommandExecuting = false
+                if (currentState != ConversationState.IDLE && !isCallActive && !isSpeakingOrPlaying) {
+                    transitionToState(ConversationState.LISTENING)
+                    triggerListenCycle()
+                }
+            }, COMMAND_EXECUTION_DELAY_MS)
         }
     }
 
