@@ -555,12 +555,40 @@ After command, add ONE short Hinglish line:
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, gr: IntArray) {
         super.onRequestPermissionsResult(rc, p, gr)
-        if (rc == PERMISSIONS_REQUEST) { startSystemServices(); if (!gr.all { it == PackageManager.PERMISSION_GRANTED }) Toast.makeText(this, "Kuch permissions nahi mili", Toast.LENGTH_LONG).show() }
+        if (rc == PERMISSIONS_REQUEST) {
+            // Only start services if RECORD_AUDIO is granted (critical for voice)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                startSystemServices()
+            } else {
+                Toast.makeText(this, "Microphone permission chahiye! App band ho raha hai.", Toast.LENGTH_LONG).show()
+            }
+            if (!gr.all { it == PackageManager.PERMISSION_GRANTED }) {
+                Toast.makeText(this, "Kuch permissions nahi mili", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun startSystemServices() {
-        try { ContextCompat.startForegroundService(this, Intent(this, MyraOverlayService::class.java)); ContextCompat.startForegroundService(this, Intent(this, CallMonitorService::class.java)) }
-        catch (e: Exception) { Log.e(TAG, "Service start: ${e.message}") }
+        // Only start foreground services if we have the required permissions
+        val hasRecordAudio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val hasPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasRecordAudio) {
+            Log.w(TAG, "RECORD_AUDIO permission missing, skipping overlay service")
+            return
+        }
+
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, MyraOverlayService::class.java))
+        } catch (e: Exception) { Log.e(TAG, "Overlay service start failed: ${e.message}") }
+
+        if (hasPhoneState) {
+            try {
+                ContextCompat.startForegroundService(this, Intent(this, CallMonitorService::class.java))
+            } catch (e: Exception) { Log.e(TAG, "Call monitor service start failed: ${e.message}") }
+        } else {
+            Log.w(TAG, "READ_PHONE_STATE permission missing, skipping call monitor")
+        }
     }
 
     private fun showPinDialog() { initViews(); createSpeechRecognizer(); tts = TextToSpeech(this, this); checkPermissions(); checkDefaultAssistant(); setupPostAuth() }
@@ -573,6 +601,8 @@ After command, add ONE short Hinglish line:
         stopRecognizer(); speechRecognizer?.destroy(); speechRecognizer = null
         tts?.shutdown(); mainHandler.removeCallbacksAndMessages(null)
         if (::liveClient.isInitialized) liveClient.disconnect()
-        liveAudioManager.stop()
+        if (::liveAudioManager.isInitialized) {
+            try { liveAudioManager.stop(); liveAudioManager.release() } catch (_: Exception) {}
+        }
     }
 }
