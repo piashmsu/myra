@@ -328,7 +328,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
         isSpeaking = true
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "CALL_\${System.currentTimeMillis()}")
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "CALL_${System.currentTimeMillis()}")
         Log.d(TAG, "TTS fallback: $text")
 
         val duration = (text.length * 80L).coerceIn(1000L, 5000L)
@@ -356,7 +356,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 isListening = false
                 val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val spoken = texts?.firstOrNull()?.lowercase()?.trim() ?: ""
-                Log.d(TAG, "User said: '\$spoken'")
+                Log.d(TAG, "User said: '$spoken'")
 
                 if (spoken.isEmpty()) {
                     if (!isDecisionMade) repeatAnnouncement()
@@ -371,9 +371,9 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
                     SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "TIMEOUT"
                     SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "BUSY"
-                    else -> "ERROR_\$errorCode"
+                    else -> "ERROR_$errorCode"
                 }
-                Log.w(TAG, "Speech error: \$errorMsg")
+                Log.w(TAG, "Speech error: $errorMsg")
 
                 if (!isDecisionMade) {
                     handler.postDelayed({ if (!isDecisionMade) startListening() }, 1500)
@@ -417,7 +417,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
      */
     private fun processCommand(spoken: String) {
         val lower = spoken.lowercase().trim()
-        Log.d(TAG, "Processing command: '\$lower'")
+        Log.d(TAG, "Processing command: '$lower'")
 
         // ANSWER keywords — MULTI-LANGUAGE SUPPORT
         val answerWords = listOf(
@@ -490,7 +490,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val isAnswer = hasAnswer && (!hasReject || answerIndex < rejectIndex)
         val isReject = hasReject && (!hasAnswer || rejectIndex < answerIndex)
 
-        Log.d(TAG, "Decision: isAnswer=\$isAnswer, isReject=\$isReject, answerPos=\$answerIndex, rejectPos=\$rejectIndex")
+        Log.d(TAG, "Decision: isAnswer=$isAnswer, isReject=$isReject, answerPos=$answerIndex, rejectPos=$rejectIndex")
 
         when {
             isAnswer && !isReject -> performAnswer()
@@ -516,8 +516,8 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         stopListening()
 
         val confirmMsg = when (personality) {
-            "gf"  -> "Ji \$userName, call utha rahi hoon! 📞"
-            else  -> "Answering the call, \$userName."
+            "gf"  -> "Ji $userName, call utha rahi hoon! 📞"
+            else  -> "Answering the call, $userName."
         }
         speakViaWebSocket(confirmMsg)
         statusText.text = "Answering... 📞"
@@ -535,7 +535,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             if (!success) {
-                speakViaWebSocket("Sorry \$userName, call nahi uth payi")
+                speakViaWebSocket("Sorry $userName, call nahi uth payi")
             }
 
             handler.postDelayed({ safeFinish() }, 2000)
@@ -560,7 +560,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "TelecomManager answer failed: \${e.message}")
+            Log.e(TAG, "TelecomManager answer failed: ${e.message}")
         }
 
         // Method 2: Accessibility fallback
@@ -575,10 +575,10 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 ) || com.myra.assistant.service.SmartAccessibilityEngine.click(
                     contentDesc = "Accept"
                 )
-                Log.d(TAG, "Accessibility answer: \$answered")
+                Log.d(TAG, "Accessibility answer: $answered")
                 success = answered
             } catch (e: Exception) {
-                Log.e(TAG, "Accessibility answer failed: \${e.message}")
+                Log.e(TAG, "Accessibility answer failed: ${e.message}")
             }
         }
 
@@ -607,9 +607,9 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 id = "com.whatsapp.w4b:id/incoming_call_answer"
             )
 
-            Log.d(TAG, "WhatsApp call answer: \$success")
+            Log.d(TAG, "WhatsApp call answer: $success")
         } catch (e: Exception) {
-            Log.e(TAG, "WhatsApp answer failed: \${e.message}")
+            Log.e(TAG, "WhatsApp answer failed: ${e.message}")
         }
 
         return success
@@ -624,8 +624,8 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         stopListening()
 
         val confirmMsg = when (personality) {
-            "gf"  -> "Theek hai \$userName, call reject kar diya. ❌"
-            else  -> "Call declined, \$userName."
+            "gf"  -> "Theek hai $userName, call reject kar diya. ❌"
+            else  -> "Call declined, $userName."
         }
         speakViaWebSocket(confirmMsg)
         statusText.text = "Rejecting... ❌"
@@ -643,7 +643,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             if (!success) {
-                speakViaWebSocket("Sorry \$userName, call reject nahi ho paya")
+                speakViaWebSocket("Sorry $userName, call reject nahi ho paya")
             }
 
             handler.postDelayed({ safeFinish() }, 2000)
@@ -672,7 +672,7 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 Log.w(TAG, "TelecomManager.endCall() requires API 28")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "TelecomManager reject failed: \${e.message}")
+            Log.e(TAG, "TelecomManager reject failed: ${e.message}")
         }
 
         // Method 2: Accessibility fallback
@@ -687,10 +687,10 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 ) || com.myra.assistant.service.SmartAccessibilityEngine.click(
                     contentDesc = "Reject call"
                 )
-                Log.d(TAG, "Accessibility reject: \$rejected")
+                Log.d(TAG, "Accessibility reject: $rejected")
                 success = rejected
             } catch (e: Exception) {
-                Log.e(TAG, "Accessibility reject failed: \${e.message}")
+                Log.e(TAG, "Accessibility reject failed: ${e.message}")
             }
         }
 
@@ -716,9 +716,9 @@ class CallAssistantActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 id = "com.whatsapp.w4b:id/incoming_call_decline"
             )
 
-            Log.d(TAG, "WhatsApp call reject: \$success")
+            Log.d(TAG, "WhatsApp call reject: $success")
         } catch (e: Exception) {
-            Log.e(TAG, "WhatsApp reject failed: \${e.message}")
+            Log.e(TAG, "WhatsApp reject failed: ${e.message}")
         }
 
         return success
